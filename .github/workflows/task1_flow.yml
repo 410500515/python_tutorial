@@ -1,0 +1,87 @@
+name: Check Task 1
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  check_and_merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Run check script
+        id: check
+        run: |
+          STUDENT_ID=$(basename ${{ github.event.pull_request.head.ref }})
+          echo "STUDENT_ID=$STUDENT_ID"
+          if [ ! -f "scripts/task1_flow.py" ]; then
+            echo "檢查腳本未找到，請確保 repository 包含 scripts/task1_flow.py" > check_output.txt
+            echo "FAILED=true" >> $GITHUB_ENV
+          else
+            python scripts/task1_flow.py "$STUDENT_ID" > check_output.txt 2>&1
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "FAILED=true" >> $GITHUB_ENV
+            fi
+          fi
+          cat check_output.txt
+          echo "CHECK_OUTPUT=$(cat check_output.txt)" >> $GITHUB_ENV
+
+      - name: Debug output
+        run: |
+          echo "FAILED=$FAILED"
+          echo "CHECK_OUTPUT=$CHECK_OUTPUT"
+
+      - name: Auto Merge PR
+        if: ${{ env.FAILED != 'true' }}
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ github.event.pull_request.number }}
+          merge-method: merge
+
+      - name: Comment on PR
+        if: ${{ env.FAILED == 'true' }}
+        uses: actions/github-script@v6.4.1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const hasCommented = comments.data.some(comment => comment.body.includes('提交檢查未通過'));
+            if (!hasCommented) {
+              const output = process.env.CHECK_OUTPUT || "無詳細錯誤訊息";
+              const comment = `
+                ## 提交檢查未通過
+                以下是問題：
+                \`\`\`
+                ${output}
+                \`\`\`
+                請修正後重新提交 PR。
+              `;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
